@@ -313,6 +313,15 @@ public class InAppBrowser extends CordovaPlugin {
             }
             injectDeferredObject(args.getString(0), jsWrapper);
         }
+        else if (action.equals("injectScriptElement")) {
+            String jsWrapper;
+            if (args.getBoolean(1)) {
+                jsWrapper = String.format("(function(d) { var b = new Blob([%%s], {type: 'application/javascript'}); var u = URL.createObjectURL(b); var c = d.createElement('script'); c.src = u; c.onload = function() { URL.revokeObjectURL(u); prompt('', 'gap-iab://%s'); }; d.body.appendChild(c); })(document)", callbackContext.getCallbackId());
+            } else {
+                jsWrapper = "(function(d) { var b = new Blob([%s], {type: 'application/javascript'}); var u = URL.createObjectURL(b); var c = d.createElement('script'); c.src = u; c.onload = function() { URL.revokeObjectURL(u); }; d.body.appendChild(c); })(document)";
+            }
+            injectDeferredObject(args.getString(0), jsWrapper);
+        }
         else if (action.equals("show")) {
             this.cordova.getActivity().runOnUiThread(new Runnable() {
                 @Override

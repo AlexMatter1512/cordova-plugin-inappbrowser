@@ -90,6 +90,14 @@
             }
         },
 
+        insertScript: function (injectDetails, cb) {
+            if (injectDetails.code) {
+                exec(cb, null, 'InAppBrowser', 'injectScriptElement', [injectDetails.code, !!cb]);
+            } else {
+                throw new Error('insertScript requires code to be specified');
+            }
+        },
+
         addDownloadListener: function (success, error) {
             exec(success, error, 'InAppBrowser', 'downloadListener');
         }

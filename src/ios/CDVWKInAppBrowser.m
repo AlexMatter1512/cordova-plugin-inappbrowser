@@ -413,11 +413,23 @@ static CDVWKInAppBrowser* instance = nil;
 - (void)injectStyleFile:(CDVInvokedUrlCommand*)command
 {
     NSString* jsWrapper;
-    
+
     if ((command.callbackId != nil) && ![command.callbackId isEqualToString:@"INVALID"]) {
         jsWrapper = [NSString stringWithFormat:@"(function(d) { var c = d.createElement('link'); c.rel='stylesheet'; c.type='text/css'; c.href = %%@; c.onload = function() { _cdvMessageHandler('%@'); }; d.body.appendChild(c); })(document)", command.callbackId];
     } else {
         jsWrapper = @"(function(d) { var c = d.createElement('link'); c.rel='stylesheet', c.type='text/css'; c.href = %@; d.body.appendChild(c); })(document)";
+    }
+    [self injectDeferredObject:[command argumentAtIndex:0] withWrapper:jsWrapper];
+}
+
+- (void)injectScriptElement:(CDVInvokedUrlCommand*)command
+{
+    NSString* jsWrapper;
+
+    if ((command.callbackId != nil) && ![command.callbackId isEqualToString:@"INVALID"]) {
+        jsWrapper = [NSString stringWithFormat:@"(function(d) { var b = new Blob([%%@], {type: 'application/javascript'}); var u = URL.createObjectURL(b); var c = d.createElement('script'); c.src = u; c.onload = function() { URL.revokeObjectURL(u); _cdvMessageHandler('%@'); }; d.body.appendChild(c); })(document)", command.callbackId];
+    } else {
+        jsWrapper = @"(function(d) { var b = new Blob([%@], {type: 'application/javascript'}); var u = URL.createObjectURL(b); var c = d.createElement('script'); c.src = u; c.onload = function() { URL.revokeObjectURL(u); }; d.body.appendChild(c); })(document)";
     }
     [self injectDeferredObject:[command argumentAtIndex:0] withWrapper:jsWrapper];
 }
