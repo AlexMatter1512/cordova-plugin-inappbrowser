@@ -15,5 +15,4 @@
 # specific language governing permissions and limitations
 # under the License.
 
-* text eol=lf
-*.png binary
+* text=auto eol=lf
