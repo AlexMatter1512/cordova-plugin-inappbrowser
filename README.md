@@ -720,3 +720,23 @@ iab.open('https://url-that-fails-whitelist.com', 'random_string'); // loads in t
 iab.open('https://url-that-fails-whitelist.com', 'random_string', 'location=no'); // loads in the InAppBrowser, no location bar
 
 ```
+
+## JustAgram fork extensions
+
+This fork adds `insertScript({ code }, callback)` to inject JavaScript through a
+Blob-backed script element on Android and iOS.
+
+The `profile` browser option selects a persistent, isolated website data store.
+Omit it or use `default` to preserve the original store; additional profiles use
+lowercase UUID identifiers. Android requires WebView `MULTI_PROFILE` support and
+iOS requires version 17 or later. Unsupported additional profiles fail rather
+than sharing the default session.
+
+The native actions `checkProfile` and `removeProfile` accept a profile identifier
+through `cordova.exec`. Close a profile before removing it; the default profile
+cannot be removed. Android clears browsing data when an already-loaded store
+cannot be deleted until a later process, and retries store deletion on a later
+support check. The browser's `exit` event follows Android WebView teardown so
+clients can wait for it before opening another profile.
+
+These changes are maintained here directly; JustAgram does not need a Bun patch.

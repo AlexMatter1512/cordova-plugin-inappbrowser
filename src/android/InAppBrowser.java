@@ -45,7 +45,12 @@ import android.view.WindowManager;
 import android.view.WindowManager.LayoutParams;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
+import android.view.ViewGroup;
 import android.webkit.CookieManager;
+import androidx.webkit.ProfileStore;
+import androidx.webkit.WebStorageCompat;
+import androidx.webkit.WebViewCompat;
+import androidx.webkit.WebViewFeature;
 import android.webkit.HttpAuthHandler;
 import android.webkit.JavascriptInterface;
 import android.webkit.SslErrorHandler;
@@ -122,7 +127,7 @@ public class InAppBrowser extends CordovaPlugin {
 
     private static final int TOOLBAR_HEIGHT = 48;
 
-    private static final List customizableOptions = Arrays.asList(CLOSE_BUTTON_CAPTION, TOOLBAR_COLOR, NAVIGATION_COLOR, CLOSE_BUTTON_COLOR, FOOTER_COLOR);
+    private static final List customizableOptions = Arrays.asList(CLOSE_BUTTON_CAPTION, TOOLBAR_COLOR, NAVIGATION_COLOR, CLOSE_BUTTON_COLOR, FOOTER_COLOR, "profile");
 
     private InAppBrowserDialog dialog;
     private WebView inAppWebView;
@@ -162,6 +167,57 @@ public class InAppBrowser extends CordovaPlugin {
      * @return A PluginResult object with a status and message.
      */
     public boolean execute(String action, CordovaArgs args, final CallbackContext callbackContext) throws JSONException {
+        if (action.equals("removeProfile")) {
+            final String profile = args.getString(0);
+            cordova.getActivity().runOnUiThread(() -> {
+                String error = profileError(profile);
+                if ("default".equals(profile)) error = "The original profile cannot be removed.";
+                if (error == null && inAppWebView != null &&
+                    ("justagram-" + profile).equals(WebViewCompat.getProfile(inAppWebView).getName())) {
+                    error = "Close this profile before removing it.";
+                }
+                if (error != null) {
+                    callbackContext.error(error);
+                    return;
+                }
+                try {
+                    // false means no store exists yet (e.g. a profile never opened).
+                    ProfileStore.getInstance().deleteProfile("justagram-" + profile);
+                    callbackContext.success();
+                } catch (IllegalStateException ex) {
+                    if (!WebViewFeature.isFeatureSupported(WebViewFeature.DELETE_BROWSING_DATA)) {
+                        callbackContext.error("Update Android System WebView to remove a previously opened profile.");
+                        return;
+                    }
+                    try {
+                        String nativeName = "justagram-" + profile;
+                        // Loaded profiles cannot be deleted until the next process. Erase
+                        // all credentials/site data now, then prune the empty store later.
+                        WebStorageCompat.deleteBrowsingData(
+                            ProfileStore.getInstance().getProfile(nativeName).getWebStorage(), () -> {
+                                cordova.getActivity().getSharedPreferences("justagram_removed_profiles", 0)
+                                    .edit().putBoolean(nativeName, true).apply();
+                                callbackContext.success();
+                            });
+                    } catch (RuntimeException removalError) {
+                        callbackContext.error("Unable to remove the saved session. Please try again.");
+                    }
+                } catch (RuntimeException ex) {
+                    callbackContext.error("Unable to remove the saved session. Please try again.");
+                }
+            });
+            return true;
+        }
+        if (action.equals("checkProfile")) {
+            final String profile = args.getString(0);
+            cordova.getActivity().runOnUiThread(() -> {
+                pruneRemovedProfiles();
+                String error = profileError(profile);
+                if (error == null) callbackContext.success();
+                else callbackContext.error(error);
+            });
+            return true;
+        }
         if (action.equals("open")) {
             this.callbackContext = callbackContext;
             final String url = args.getString(0);
@@ -177,6 +233,12 @@ public class InAppBrowser extends CordovaPlugin {
             this.cordova.getActivity().runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
+                    String profile = features == null ? "default" : features.getOrDefault("profile", "default");
+                    String error = profileError(profile);
+                    if (error != null) {
+                        callbackContext.error(error);
+                        return;
+                    }
                     String result = "";
                     // SELF
                     if (SELF.equals(target)) {
@@ -367,6 +429,7 @@ public class InAppBrowser extends CordovaPlugin {
      */
     @Override
     public void onPause(boolean multitasking) {
+        if (inAppWebView != null) cookieManagerFor(inAppWebView).flush();
         if (shouldPauseInAppBrowser) {
             inAppWebView.onPause();
         }
@@ -542,27 +605,30 @@ public class InAppBrowser extends CordovaPlugin {
                     return;
                 }
 
+                final InAppBrowserDialog closingDialog = dialog;
+                cookieManagerFor(childView).flush();
                 childView.setWebViewClient(new WebViewClient() {
-                    // NB: wait for about:blank before dismissing
                     public void onPageFinished(WebView view, String url) {
-                        if (dialog != null && !cordova.getActivity().isFinishing()) {
-                            dialog.dismiss();
-                            dialog = null;
+                        if (closingDialog != null && !cordova.getActivity().isFinishing()) {
+                            closingDialog.dismiss();
+                        }
+                        if (childView.getParent() instanceof ViewGroup) {
+                            ((ViewGroup) childView.getParent()).removeView(childView);
+                        }
+                        childView.destroy();
+                        if (inAppWebView == childView) inAppWebView = null;
+                        if (dialog == closingDialog) dialog = null;
+                        // Signal exit only after teardown so another profile cannot overlap.
+                        try {
+                            JSONObject obj = new JSONObject();
+                            obj.put("type", EXIT_EVENT);
+                            sendUpdate(obj, false);
+                        } catch (JSONException ex) {
+                            LOG.d(LOG_TAG, "Should never happen");
                         }
                     }
                 });
-                // NB: From SDK 19: "If you call methods on WebView from any thread
-                // other than your app's UI thread, it can cause unexpected results."
-                // http://developer.android.com/guide/webapps/migrating.html#Threads
                 childView.loadUrl("about:blank");
-
-                try {
-                    JSONObject obj = new JSONObject();
-                    obj.put("type", EXIT_EVENT);
-                    sendUpdate(obj, false);
-                } catch (JSONException ex) {
-                    LOG.d(LOG_TAG, "Should never happen");
-                }
             }
         });
     }
@@ -628,6 +694,38 @@ public class InAppBrowser extends CordovaPlugin {
         return this.showLocationBar;
     }
 
+    private void pruneRemovedProfiles() {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) return;
+        android.content.SharedPreferences pending = cordova.getActivity()
+            .getSharedPreferences("justagram_removed_profiles", 0);
+        for (String name : pending.getAll().keySet()) {
+            try {
+                ProfileStore.getInstance().deleteProfile(name);
+                pending.edit().remove(name).apply();
+            } catch (RuntimeException ignored) {
+                // Still loaded in this process; retry on the next app launch.
+            }
+        }
+    }
+
+    private String profileError(String profile) {
+        if ("default".equals(profile)) return null;
+        if (!profile.matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")) {
+            return "Invalid profile identifier.";
+        }
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
+            return "Update Android System WebView to use additional profiles. Default is still available.";
+        }
+        return null;
+    }
+
+    private CookieManager cookieManagerFor(WebView view) {
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
+            return WebViewCompat.getProfile(view).getCookieManager();
+        }
+        return CookieManager.getInstance();
+    }
+
     private InAppBrowser getInAppBrowser() {
         return this;
     }
@@ -639,6 +737,7 @@ public class InAppBrowser extends CordovaPlugin {
      * @param features jsonObject
      */
     public String showWebPage(final String url, HashMap<String, String> features) {
+        final String profile = features == null ? "default" : features.getOrDefault("profile", "default");
         // Determine if we should hide the location bar.
         showLocationBar = true;
         showZoomControls = true;
@@ -928,6 +1027,10 @@ public class InAppBrowser extends CordovaPlugin {
 
                 // WebView
                 inAppWebView = new WebView(cordova.getActivity());
+                // Set before accessing any WebView APIs: storage is persistent and profile-specific.
+                if (!"default".equals(profile)) {
+                    WebViewCompat.setProfile(inAppWebView, "justagram-" + profile);
+                }
                 inAppWebView.setLayoutParams(new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
                 inAppWebView.setId(Integer.valueOf(6));
                 // File Chooser Implemented ChromeClient
@@ -1022,13 +1125,13 @@ public class InAppBrowser extends CordovaPlugin {
                 settings.setDomStorageEnabled(true);
 
                 if (clearAllCache) {
-                    CookieManager.getInstance().removeAllCookie();
+                    cookieManagerFor(inAppWebView).removeAllCookies(null);
                 } else if (clearSessionCache) {
-                    CookieManager.getInstance().removeSessionCookie();
+                    cookieManagerFor(inAppWebView).removeSessionCookies(null);
                 }
 
                 // Enable Thirdparty Cookies
-                CookieManager.getInstance().setAcceptThirdPartyCookies(inAppWebView,true);
+                cookieManagerFor(inAppWebView).setAcceptThirdPartyCookies(inAppWebView,true);
 
                 inAppWebView.loadUrl(url);
                 inAppWebView.setId(Integer.valueOf(6));
@@ -1386,7 +1489,7 @@ public class InAppBrowser extends CordovaPlugin {
             injectDeferredObject("window.webkit={messageHandlers:{cordova_iab:cordova_iab}}", null);
 
             // CB-10395 InAppBrowser's WebView not storing cookies reliable to local device storage
-            CookieManager.getInstance().flush();
+            cookieManagerFor(view).flush();
 
             // https://issues.apache.org/jira/browse/CB-11248
             view.clearFocus();

@@ -78,6 +78,55 @@ static CDVWKInAppBrowser* instance = nil;
     return NO;
 }
 
+- (NSString*)profileError:(NSString*)profile
+{
+    if (profile == nil || [profile isEqualToString:@"default"]) return nil;
+    if (![[NSUUID alloc] initWithUUIDString:profile]) return @"Invalid profile identifier.";
+    if (@available(iOS 17.0, *)) return nil;
+    return @"Additional profiles require iOS 17 or later. Default is still available.";
+}
+
+- (void)removeProfile:(CDVInvokedUrlCommand*)command
+{
+    NSString* profile = [command argumentAtIndex:0 withDefault:@"default"];
+    NSString* error = [self profileError:profile];
+    if ([profile isEqualToString:@"default"]) error = @"The original profile cannot be removed.";
+    if (@available(iOS 17.0, *)) {
+        NSUUID* activeIdentifier = self.inAppBrowserViewController.webView.configuration.websiteDataStore.identifier;
+        if (activeIdentifier != nil && [activeIdentifier isEqual:[[NSUUID alloc] initWithUUIDString:profile]]) {
+            error = @"Close this profile before removing it.";
+        }
+    }
+    if (error != nil) {
+        [self.commandDelegate sendPluginResult:[CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:error] callbackId:command.callbackId];
+        return;
+    }
+    if (@available(iOS 17.0, *)) {
+        NSUUID* identifier = [[NSUUID alloc] initWithUUIDString:profile];
+        [WKWebsiteDataStore fetchAllDataStoreIdentifiers:^(NSArray<NSUUID*>* identifiers) {
+            if (![identifiers containsObject:identifier]) {
+                [self.commandDelegate sendPluginResult:[CDVPluginResult resultWithStatus:CDVCommandStatus_OK] callbackId:command.callbackId];
+                return;
+            }
+            [WKWebsiteDataStore removeDataStoreForIdentifier:identifier completionHandler:^(NSError* removalError) {
+                CDVPluginResult* result = removalError
+                    ? [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"Unable to remove the saved session. Restart JustAgram and try again."]
+                    : [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];
+                [self.commandDelegate sendPluginResult:result callbackId:command.callbackId];
+            }];
+        }];
+    }
+}
+
+- (void)checkProfile:(CDVInvokedUrlCommand*)command
+{
+    NSString* error = [self profileError:[command argumentAtIndex:0 withDefault:@"default"]];
+    CDVPluginResult* result = error
+        ? [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:error]
+        : [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];
+    [self.commandDelegate sendPluginResult:result callbackId:command.callbackId];
+}
+
 - (void)open:(CDVInvokedUrlCommand*)command
 {
     CDVPluginResult* pluginResult;
@@ -86,6 +135,12 @@ static CDVWKInAppBrowser* instance = nil;
     NSString* target = [command argumentAtIndex:1 withDefault:kInAppBrowserTargetSelf];
     NSString* options = [command argumentAtIndex:2 withDefault:@"" andClass:[NSString class]];
     
+    CDVInAppBrowserOptions* profileOptions = [CDVInAppBrowserOptions parseOptions:options];
+    NSString* profileError = [self profileError:profileOptions.profile];
+    if (profileError != nil) {
+        [self.commandDelegate sendPluginResult:[CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:profileError] callbackId:command.callbackId];
+        return;
+    }
     self.callbackId = command.callbackId;
     
     if (url != nil) {
@@ -118,6 +173,11 @@ static CDVWKInAppBrowser* instance = nil;
     CDVInAppBrowserOptions* browserOptions = [CDVInAppBrowserOptions parseOptions:options];
     
     WKWebsiteDataStore* dataStore = [WKWebsiteDataStore defaultDataStore];
+    if (@available(iOS 17.0, *)) {
+        if (browserOptions.profile != nil && ![browserOptions.profile isEqualToString:@"default"]) {
+            dataStore = [WKWebsiteDataStore dataStoreForIdentifier:[[NSUUID alloc] initWithUUIDString:browserOptions.profile]];
+        }
+    }
     if (browserOptions.cleardata) {
         
         NSDate* dateFrom = [NSDate dateWithTimeIntervalSince1970:0];
@@ -682,6 +742,11 @@ BOOL isExiting = FALSE;
     WKUserContentController* userContentController = [[WKUserContentController alloc] init];
     
     WKWebViewConfiguration* configuration = [[WKWebViewConfiguration alloc] init];
+    if (@available(iOS 17.0, *)) {
+        if (_browserOptions.profile != nil && ![_browserOptions.profile isEqualToString:@"default"]) {
+            configuration.websiteDataStore = [WKWebsiteDataStore dataStoreForIdentifier:[[NSUUID alloc] initWithUUIDString:_browserOptions.profile]];
+        }
+    }
     
     NSString *userAgent = configuration.applicationNameForUserAgent;
     if (

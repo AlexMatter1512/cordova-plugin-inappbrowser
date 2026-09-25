@@ -21,6 +21,7 @@
 
 @interface CDVInAppBrowserOptions : NSObject {}
 
+@property (nonatomic, copy) NSString* profile;
 @property (nonatomic, assign) BOOL location;
 @property (nonatomic, assign) BOOL toolbar;
 @property (nonatomic, copy) NSString* closebuttoncaption;

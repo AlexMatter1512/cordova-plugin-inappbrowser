@@ -38,6 +38,7 @@
 
     <!-- android -->
     <platform name="android">
+        <framework src="androidx.webkit:webkit:1.14.0" />
         <js-module src="www/inappbrowser.js" name="inappbrowser">
             <clobbers target="cordova.InAppBrowser.open" />
         </js-module>
